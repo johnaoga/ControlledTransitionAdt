@@ -1,0 +1,36 @@
+[package]
+name = "phase-specialized-cts"
+version = "0.1.0"
+edition = "2021"
+description = "Phase-specialized data structures for symbolic abstraction-based controller synthesis"
+license = "MIT"
+
+# See specs.md for architecture rationale.
+
+[dependencies]
+# Optional BDD backend — feature-gated; wired in Phase 3.
+oxidd = { version = "0.6", optional = true }
+# SHA-256 checksum of the canonical triple stream in trace headers.
+sha2 = "0.10"
+
+[dev-dependencies]
+# Statistical microbenchmarks
+criterion = { version = "0.5", features = ["html_reports"] }
+# Randomized property-based conformance testing
+proptest = "1"
+
+[features]
+default = []
+oxidd = ["dep:oxidd"]
+
+[[bench]]
+name = "operations"
+harness = false
+
+[[bin]]
+name = "five_state"
+path = "src/bin/five_state.rs"
+
+[[bin]]
+name = "replay"
+path = "src/bin/replay.rs"
