@@ -17,7 +17,7 @@ cargo bench                                 # criterion suite; PSCTS_BENCH_SIDE=
 
 ## Architecture
 
-See [CLAUDE.md](CLAUDE.md) for full implementation guide and [specs.md](specs.md) for the research spec.
+See [Agent.md](Agent.md) for full implementation guide and [specs.md](specs.md) for the research spec.
 
 ## Phases
 
