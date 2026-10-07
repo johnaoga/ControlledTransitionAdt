@@ -3,14 +3,14 @@
 //! Uses proptest to generate random small transition systems and asserts that
 //! cpre, reachability, and invariance match the reference on every instance.
 
+use phase_specialized_cts::builder::HashBuilder;
+use phase_specialized_cts::semantic::reference::{
+    cpre_reference, invariance_reference, reachability_reference,
+};
+use phase_specialized_cts::semantic::types::{InputId, StateId, StateSet};
+use phase_specialized_cts::semantic::ControlledTransitionAdt;
 use proptest::prelude::*;
 use std::collections::HashSet;
-use phase_specialized_cts::builder::HashBuilder;
-use phase_specialized_cts::semantic::types::{InputId, StateId, StateSet};
-use phase_specialized_cts::semantic::reference::{
-    cpre_reference, reachability_reference, invariance_reference,
-};
-use phase_specialized_cts::semantic::ControlledTransitionAdt;
 
 /// Generate a random small transition system.
 fn arb_system(
@@ -20,9 +20,8 @@ fn arb_system(
 ) -> impl Strategy<Value = (usize, usize, HashSet<(StateId, InputId, StateId)>)> {
     (2..=max_states, 2..=max_inputs).prop_flat_map(move |(n, a)| {
         let triple_strategy = prop::collection::hash_set(
-            (0..n as u32, 0..a as u32, 0..n as u32).prop_map(|(x, u, y)| {
-                (StateId(x), InputId(u), StateId(y))
-            }),
+            (0..n as u32, 0..a as u32, 0..n as u32)
+                .prop_map(|(x, u, y)| (StateId(x), InputId(u), StateId(y))),
             0..=max_triples,
         );
         (Just(n), Just(a), triple_strategy)

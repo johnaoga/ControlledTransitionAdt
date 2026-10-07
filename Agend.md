@@ -108,6 +108,7 @@ cargo run --bin replay -- trace.txt  # replay a trace file
 | Reverse CSR | Deferred to Phase 2 | Phase 1 runs O(k(M+H)) without it; forward-only structure accommodates it with one extra pass |
 | Solver scan granularity | One full pair scan per rank layer (reach) / per deletion sweep (invariance), not per dequeued state | Matches the documented O(k(M+H)) bound with k = rounds; per-state scans would be O(N(M+H)). Live-pair lists shrink each round |
 | Reach ranks / controller | rank = layer index = 1 + max succ rank (optimal); chosen = lowest PairId firing at that layer | Deterministic; verified against layered-CPre definition |
+| Oracle rank / chosen | `reachability_reference` ranks = first layer k of W_k = W_{k-1} ∪ CPre(W_{k-1}); chosen = lowest *canonical* PairId (index in sorted distinct (x,u) pairs, same numbering as `freeze`) inside W_{rank-1} | Frozen solver results are compared to the oracle exactly, including chosen PairIds |
 | Trace checksum | `# checksum: <hex>` = SHA-256 over sorted, deduplicated triples, each 12 bytes big-endian `x‖u‖y` | Order/duplicate/endianness independent (spec open question 4) |
 | Trace names | Name = rest of line after id, trimmed (spaces allowed, no quoting); header name vecs always have length N / A | Simplest unambiguous convention |
 | `parse_trace` signature | Returns `Box<dyn Iterator + 'a>` bound to the reader's lifetime | Lazy parsing of borrowed readers (`Cursor<&Vec<u8>>` in tests) |

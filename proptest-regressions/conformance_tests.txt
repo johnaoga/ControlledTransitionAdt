@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 86b54370d838ceab5940e7a9dc4804b6e9f63bfc378ae18c4536b62a63279669 # shrinks to (n, a, triples, target, constraint, _) = (10, 1, {(StateId(2), InputId(0), StateId(4)), (StateId(2), InputId(0), StateId(5)), (StateId(6), InputId(0), StateId(3)), (StateId(8), InputId(0), StateId(8))}, DenseBitVec { words: [40], n_bits: 10 }, DenseBitVec { words: [319], n_bits: 10 }, DenseBitVec { words: [1], n_bits: 1 })
+cc 41e7960c52b5511666a48ce7534cd76a39cef864d6418d45ad7a556b3f926849 # shrinks to (n, a, triples, target, constraint, _) = (9, 3, {(StateId(3), InputId(0), StateId(6)), (StateId(3), InputId(2), StateId(0))}, DenseBitVec { words: [65], n_bits: 9 }, DenseBitVec { words: [0], n_bits: 9 }, DenseBitVec { words: [0], n_bits: 3 })

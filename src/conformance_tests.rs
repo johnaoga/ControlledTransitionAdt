@@ -64,8 +64,8 @@ fn sorted<T: Ord>(it: impl Iterator<Item = T>) -> Vec<T> {
     v
 }
 
-/// Ranks by definition: rank[x] = least k with x ∈ W_k, W_0 = target,
-/// W_k = W_{k-1} ∪ (CPre(W_{k-1}) ∩ C).
+/// Constrained ranks by definition (the oracle has no constraint parameter):
+/// rank[x] = least k with x ∈ W_k, W_0 = target, W_k = W_{k-1} ∪ (CPre(W_{k-1}) ∩ C).
 fn layered_ranks(
     triples: &Triples,
     target: &StateSet,
@@ -140,8 +140,12 @@ proptest! {
         let idx: IndexedFrozen = hash.clone().freeze();
 
         let r = idx.reachability(&target, None);
-        prop_assert_eq!(&r.winning, &reachability_reference(&triples, &target, n).winning);
-        prop_assert_eq!(&r.rank, &layered_ranks(&triples, &target, None, n));
+        // The oracle uses freeze's canonical pair numbering, so the whole result
+        // (winning set, ranks, chosen PairIds) must match exactly.
+        let oracle = reachability_reference(&triples, &target, n);
+        prop_assert_eq!(&r.winning, &oracle.winning);
+        prop_assert_eq!(&r.rank, &oracle.rank);
+        prop_assert_eq!(&r.chosen, &oracle.chosen);
         let rh = hash.reachability(&target, None);
         prop_assert_eq!(&rh.winning, &r.winning);
         prop_assert_eq!(&rh.rank, &r.rank);

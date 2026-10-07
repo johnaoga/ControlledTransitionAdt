@@ -1,8 +1,8 @@
 //! Parse → serialize → re-parse identity tests for the Appendix C trace format.
 
-use std::io::Cursor;
 use phase_specialized_cts::builder::{parse_trace, write_trace};
 use phase_specialized_cts::semantic::types::{InputId, StateId, TraceHeader};
+use std::io::Cursor;
 
 fn minimal_header() -> TraceHeader {
     TraceHeader {

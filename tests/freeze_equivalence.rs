@@ -1,9 +1,9 @@
 //! Tests that HashBuilder → freeze() preserves the triple set exactly.
 
-use std::collections::HashSet;
 use phase_specialized_cts::builder::HashBuilder;
-use phase_specialized_cts::semantic::ControlledTransitionAdt;
 use phase_specialized_cts::semantic::types::{InputId, StateId};
+use phase_specialized_cts::semantic::ControlledTransitionAdt;
+use std::collections::HashSet;
 
 fn build_and_collect(
     n_states: usize,
@@ -62,7 +62,11 @@ fn freeze_deduplicates_duplicate_inserts() {
         (StateId(1), InputId(1), StateId(2)),
     ];
     let actual = build_and_collect(n, a, &triples);
-    assert_eq!(actual.len(), 2, "duplicates should be deduplicated after freeze");
+    assert_eq!(
+        actual.len(),
+        2,
+        "duplicates should be deduplicated after freeze"
+    );
 }
 
 #[test]

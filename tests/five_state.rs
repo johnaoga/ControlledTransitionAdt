@@ -3,8 +3,8 @@
 //! This is the primary acceptance criterion. All assertions must pass.
 
 use phase_specialized_cts::builder::HashBuilder;
-use phase_specialized_cts::semantic::ControlledTransitionAdt;
 use phase_specialized_cts::semantic::types::{InputId, StateId, StateSet};
+use phase_specialized_cts::semantic::ControlledTransitionAdt;
 
 fn five_state_store() -> (phase_specialized_cts::backend::IndexedFrozen, usize) {
     let n_states = 5;
@@ -27,7 +27,7 @@ fn five_state_store() -> (phase_specialized_cts::backend::IndexedFrozen, usize) 
     builder.add_transition(d, l, c);
     builder.add_transition(d, r, e);
     builder.add_transition(e, l, d);
-    builder.add_transition(e, r, e);  // self-loop
+    builder.add_transition(e, r, e); // self-loop
 
     (builder.freeze(), n_states)
 }
@@ -47,7 +47,11 @@ fn five_state_reachability_winning_is_all() {
     let result = store.reachability(&target, None);
 
     for id in 0..n {
-        assert!(result.winning.contains(id), "state {} should be winning", id);
+        assert!(
+            result.winning.contains(id),
+            "state {} should be winning",
+            id
+        );
     }
 }
 
@@ -140,7 +144,11 @@ fn five_state_invariance_of_all_states_is_all() {
     let all = StateSet::ones(n);
     let result = store.invariance(&all);
     for id in 0..n {
-        assert!(result.invariant.contains(id), "state {} should be in invariant of all", id);
+        assert!(
+            result.invariant.contains(id),
+            "state {} should be in invariant of all",
+            id
+        );
     }
 }
 
@@ -151,14 +159,31 @@ fn five_state_frozen_has_correct_counts() {
     let (store, _n) = five_state_store();
     // 12 transitions in the example; 11 distinct (x,u) pairs (A-L, A-R, B-L, B-R, C-L, C-R,
     // D-L, D-R, E-L, E-R) = 10 pairs. M = 12 (A-R has 2 succs, C-L has 2 succs).
-    assert_eq!(store.n_pairs(), 10, "five-state example has 10 distinct action pairs");
-    assert_eq!(store.n_incidences(), 12, "five-state example has 12 (x,u,y) triples");
+    assert_eq!(
+        store.n_pairs(),
+        10,
+        "five-state example has 10 distinct action pairs"
+    );
+    assert_eq!(
+        store.n_incidences(),
+        12,
+        "five-state example has 12 (x,u,y) triples"
+    );
 }
 
 #[test]
 fn five_state_contains_known_transitions() {
     let (store, _n) = five_state_store();
-    assert!(store.contains(StateId(0), InputId(0), StateId(1)), "A-L-B should exist");
-    assert!(store.contains(StateId(4), InputId(1), StateId(4)), "E-R-E self-loop should exist");
-    assert!(!store.contains(StateId(0), InputId(0), StateId(0)), "A-L-A should NOT exist");
+    assert!(
+        store.contains(StateId(0), InputId(0), StateId(1)),
+        "A-L-B should exist"
+    );
+    assert!(
+        store.contains(StateId(4), InputId(1), StateId(4)),
+        "E-R-E self-loop should exist"
+    );
+    assert!(
+        !store.contains(StateId(0), InputId(0), StateId(0)),
+        "A-L-A should NOT exist"
+    );
 }

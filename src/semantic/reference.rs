@@ -5,7 +5,7 @@
 //! Never benchmark these as competitors; use only for differential testing.
 
 use crate::semantic::types::{InputId, PairId, ReachResult, SafetyResult, StateId, StateSet};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Reference CPre: { x ∈ X : ∃u ∈ U, Succ(x,u) ⊆ Y }.
 ///
@@ -26,8 +26,7 @@ pub fn cpre_reference(
     // If so, x ∈ CPre(Y).
 
     // Build pair -> successor sets.
-    let mut pair_succs: std::collections::HashMap<(StateId, InputId), HashSet<StateId>> =
-        std::collections::HashMap::new();
+    let mut pair_succs: HashMap<(StateId, InputId), HashSet<StateId>> = HashMap::new();
     for &(x, u, succ) in triples {
         pair_succs.entry((x, u)).or_default().insert(succ);
     }
@@ -45,60 +44,54 @@ pub fn cpre_reference(
 /// Reference reachability: compute winning region by iterating CPre until fixed point.
 ///
 /// Returns the set of states from which `target` is reachable under a controlled strategy.
+///
+/// Layers: W_0 = target, W_k = W_{k-1} ∪ CPre(W_{k-1}).
+/// - `rank[x]` = least k with x ∈ W_k (`usize::MAX` if never), i.e. the optimal
+///   worst-case number of steps to the target.
+/// - `chosen[x]` (non-target winning x only) = the lowest canonical PairId at x whose
+///   successors all lie in W_{rank[x]-1}. Canonical PairIds number the distinct
+///   (x, u) pairs in sorted (x, u) order — the same numbering `HashBuilder::freeze`
+///   assigns — so `chosen` is directly comparable with the frozen store's controller.
 pub fn reachability_reference(
     triples: &HashSet<(StateId, InputId, StateId)>,
     target: &StateSet,
     n_states: usize,
 ) -> ReachResult {
-    let mut winning = target.clone();
-    // Fixed-point iteration: W_{k+1} = W_k ∪ CPre(W_k)
-    loop {
-        let new_cpre = cpre_reference(triples, &winning, n_states);
-        let mut changed = false;
-        for id in 0..n_states {
-            if new_cpre.contains(id) && !winning.contains(id) {
-                winning.insert(id);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-
-    // Rank assignment: BFS from target.
-    let mut rank = vec![usize::MAX; n_states];
-    let mut queue: VecDeque<usize> = VecDeque::new();
-    for id in target.iter() {
-        rank[id] = 0;
-        queue.push_back(id);
-    }
-    // Build predecessor map from triples (for rank BFS).
-    let mut preds: Vec<Vec<usize>> = vec![vec![]; n_states];
-    for &(x, _u, succ) in triples {
-        preds[succ.0 as usize].push(x.0 as usize);
-    }
-    while let Some(y) = queue.pop_front() {
-        for &x in &preds[y] {
-            if winning.contains(x) && rank[x] == usize::MAX {
-                rank[x] = rank[y] + 1;
-                queue.push_back(x);
-            }
-        }
-    }
-
-    // Chosen action: pick any (x, u) pair with all successors in winning.
-    let mut pair_succs: std::collections::HashMap<(StateId, InputId), HashSet<StateId>> =
-        std::collections::HashMap::new();
+    // Canonical pair numbering: sorted distinct (x, u) pairs with their successor sets.
+    let mut pair_succs: BTreeMap<(StateId, InputId), HashSet<StateId>> = BTreeMap::new();
     for &(x, u, succ) in triples {
         pair_succs.entry((x, u)).or_default().insert(succ);
     }
-    let mut chosen = std::collections::HashMap::new();
-    // We assign fake PairIds (just sequential) since reference has no CSR.
-    for (pair_id, ((x, _u), succs)) in pair_succs.iter().enumerate() {
-        if winning.contains(x.0 as usize) && succs.iter().all(|s| winning.contains(s.0 as usize)) {
-            // Only insert if not already chosen (first valid pair wins).
-            chosen.entry(*x).or_insert(PairId(pair_id as u32));
+
+    let mut winning = target.clone();
+    let mut rank = vec![usize::MAX; n_states];
+    for id in target.iter() {
+        rank[id] = 0;
+    }
+    let mut chosen = HashMap::new();
+
+    for k in 1.. {
+        // Layer k: states outside W_{k-1} that are in CPre(W_{k-1}).
+        let layer = cpre_reference(triples, &winning, n_states);
+        let new: Vec<usize> = layer.iter().filter(|&x| !winning.contains(x)).collect();
+        if new.is_empty() {
+            break;
+        }
+        for &x in &new {
+            rank[x] = k;
+            // Lowest canonical pair at x with all successors in W_{k-1}.
+            let pair_id = pair_succs
+                .iter()
+                .position(|(&(px, _), succs)| {
+                    px.0 as usize == x && succs.iter().all(|s| winning.contains(s.0 as usize))
+                })
+                .expect("x ∈ CPre(W) implies a pair at x inside W");
+            chosen.insert(StateId(x as u32), PairId(pair_id as u32));
+        }
+        // Grow W only after the whole layer is decided, so every choice above
+        // refers to W_{k-1}.
+        for x in new {
+            winning.insert(x);
         }
     }
 
