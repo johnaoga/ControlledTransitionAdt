@@ -12,7 +12,7 @@ The end deliverable is a Rust crate + benchmark harness supporting a peer-review
 
 Phases 0–1 implemented. All tests in `tests/` pass; `tests/` is the source of truth and must not be edited without discussing it with the user first. Extra differential/property tests live in `src/conformance_tests.rs` (`#[cfg(test)]`), including HashBuilder ≡ IndexedFrozen on every ADT op, rank optimality, controller progress, safety closure, and trace round-trip.
 
-Local toolchain: `cargo` is not on the default PATH here; use `export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"`.
+Local toolchain: Homebrew Rust (`/opt/homebrew/opt/rust`, cargo/rustfmt/clippy on the default PATH). Before finishing, run the CI gates: `cargo fmt --all -- --check`, `cargo clippy --all-targets [--features oxidd] -- -D warnings`, `cargo test --all-targets [--features oxidd]`.
 
 ## Module map
 
