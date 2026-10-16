@@ -2,9 +2,9 @@
 
 Phase-specialized data structures for symbolic abstraction-based controller synthesis.
 
-A representation-independent `ControlledTransitionAdt` trait in Rust, with phase-specialized backends (`HashBuilder` for insertion, `IndexedFrozen` for synthesis) and explicit action-hyperedge solvers (reachability attractor, invariance dual-deletion).
+A representation-independent `ControlledTransitionAdt` trait in Rust, with phase-specialized backends (`HashBuilder` for insertion, `IndexedFrozen` for synthesis, `BddBackend` / `BcddBackend` for symbolic synthesis) and explicit action-hyperedge solvers (reachability attractor, invariance dual-deletion).
 
-**Status**: Phases 0–1 implemented; all tests pass.
+**Status**: Phases 0–3 implemented; all tests pass.
 
 ## Quick start
 
@@ -14,6 +14,9 @@ cargo run --bin five_state -- --verbose     # five-state smoke test (Appendix B)
 cargo run --release --bin replay -- t.trace # replay a trace on both backends (or stdin)
 cargo bench                                 # criterion suite; PSCTS_BENCH_SIDE=200 for a bigger grid
 ```
+
+Add `--features oxidd` to any of the commands above to include the decision-diagram
+backends (tests, `replay`, and every benchmark group).
 
 ## Architecture
 
@@ -25,8 +28,8 @@ See [Agent.md](Agent.md) for full implementation guide and [specs.md](specs.md) 
 |-------|-------|--------|
 | 0 | ADT contract + reference oracle | Done |
 | 1 | HashBuilder, IndexedFrozen, solvers, benchmarks | Done |
-| 2 | Reverse CSR → O(M+H+N) solvers | Future |
-| 3 | oxidd BDD/MDD/LDD backends | Future |
+| 2 | Reverse CSR → O(M+H+N) solvers | Done |
+| 3 | oxidd decision-diagram backends (BDD, complement-edge BDD) | Done — MDD/LDD not available in oxidd |
 | 4–8 | SCOTS integration, crossover, hybrid, incremental, paper | Future |
 
 ## License

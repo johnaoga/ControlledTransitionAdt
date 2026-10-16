@@ -2,7 +2,9 @@
 //!
 //! Covers: HashBuilder vs IndexedFrozen on every ADT operation, rank optimality,
 //! controller progress / safety closure (specs.md § Testing Strategy), constrained
-//! reachability, controller serialization, and trace checksum / error handling.
+//! reachability, controller serialization, trace checksum / error handling, the
+//! reverse-index solvers vs the forward-only scans (Phase 2), and the decision-diagram
+//! backends vs the explicit ones (Phase 3, feature = "oxidd").
 
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
@@ -213,6 +215,218 @@ proptest! {
     }
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(300))]
+
+    /// The reverse CSR lists exactly the pairs containing each state, and the
+    /// event-driven solvers return the same results as the forward-only scans.
+    #[test]
+    fn reverse_index_matches_forward_scan((n, a, triples, target, constraint, _) in arb_case()) {
+        let rev = build(n, a, &triples).freeze();
+        let fwd = build(n, a, &triples).freeze_forward_only();
+        prop_assert!(rev.has_reverse() && !fwd.has_reverse());
+
+        let mut total = 0;
+        for y in (0..n as u32).map(StateId) {
+            let pairs = rev.rev_pairs(y).expect("reverse index present");
+            prop_assert!(pairs.windows(2).all(|w| w[0] < w[1]), "rev list sorted & unique");
+            let expect: Vec<PairId> = (0..rev.n_pairs() as u32)
+                .map(PairId)
+                .filter(|&p| rev.succs_for_pair(p).contains(&y))
+                .collect();
+            prop_assert_eq!(pairs, expect.as_slice());
+            total += pairs.len();
+            prop_assert!(fwd.rev_pairs(y).is_none());
+            prop_assert_eq!(
+                rev.predecessor_pairs(y).collect::<Vec<_>>(),
+                fwd.predecessor_pairs(y).collect::<Vec<_>>()
+            );
+        }
+        prop_assert_eq!(total, rev.n_incidences());
+
+        for c in [None, Some(&constraint)] {
+            let (r, f) = (rev.reachability(&target, c), fwd.reachability(&target, c));
+            prop_assert_eq!(&r.winning, &f.winning);
+            prop_assert_eq!(&r.rank, &f.rank);
+            prop_assert_eq!(&r.chosen, &f.chosen);
+        }
+        // `target` and `constraint` double as two independent safe sets.
+        for safe in [&target, &constraint] {
+            prop_assert_eq!(rev.invariance(safe).invariant, fwd.invariance(safe).invariant);
+        }
+
+        // Rebuilding the index on a forward-only store gives the same solver results.
+        let rebuilt = fwd.with_reverse();
+        for y in (0..n as u32).map(StateId) {
+            prop_assert_eq!(rebuilt.rev_pairs(y), rev.rev_pairs(y));
+        }
+    }
+}
+
+/// Long chain x → x+1 with a single input: the worst case for the layered scans
+/// (k = N rounds) and a check that the event-driven solvers handle deep ranks.
+#[test]
+fn reverse_solvers_on_long_chain() {
+    let n = 2000;
+    let mut b = HashBuilder::new(n, 1);
+    for x in 0..n as u32 - 1 {
+        b.add_transition(StateId(x), InputId(0), StateId(x + 1));
+    }
+    let store = b.freeze();
+    let mut target = StateSet::zeros(n);
+    target.insert(n - 1);
+
+    let r = store.reachability(&target, None);
+    assert_eq!(r.winning.len(), n);
+    assert!((0..n).all(|x| r.rank[x] == n - 1 - x));
+    assert_eq!(r.chosen.len(), n - 1);
+
+    // The last state has no action, so the whole chain unravels.
+    assert!(store.invariance(&StateSet::ones(n)).invariant.is_empty());
+}
+
+#[cfg(feature = "oxidd")]
+mod dd {
+    use super::*;
+    use crate::backend::{BcddBackend, BddBackend, DdBackend, DdKind};
+
+    /// Every ADT operation of a decision-diagram backend against the explicit stores.
+    fn check<F: DdKind>(
+        n: usize,
+        a: usize,
+        triples: &Triples,
+        y: &StateSet,
+        z: &StateSet,
+        filter: &StateSet,
+    ) -> Result<(), TestCaseError> {
+        let hash = build(n, a, triples);
+        let idx = hash.clone().freeze();
+        let dd: DdBackend<F> = hash.freeze_dd();
+        prop_assert_eq!(dd.n_pairs(), idx.n_pairs());
+        prop_assert_eq!(dd.n_incidences(), idx.n_incidences());
+        prop_assert!(dd.has_native_cpre());
+
+        for x in (0..n as u32).map(StateId) {
+            prop_assert_eq!(
+                dd.admissible_inputs(x).collect::<Vec<_>>(),
+                idx.admissible_inputs(x).collect::<Vec<_>>()
+            );
+            prop_assert_eq!(
+                dd.predecessor_pairs(x).collect::<Vec<_>>(),
+                idx.predecessor_pairs(x).collect::<Vec<_>>()
+            );
+            for u in (0..a as u32).map(InputId) {
+                prop_assert_eq!(
+                    dd.successors(x, u).collect::<Vec<_>>(),
+                    idx.successors(x, u).collect::<Vec<_>>()
+                );
+                for s in (0..n as u32).map(StateId) {
+                    prop_assert_eq!(dd.contains(x, u, s), triples.contains(&(x, u, s)));
+                }
+            }
+        }
+
+        prop_assert_eq!(dd.post(y, None), idx.post(y, None));
+        prop_assert_eq!(dd.post(y, Some(filter)), idx.post(y, Some(filter)));
+        prop_assert_eq!(dd.cpre(y), cpre_reference(triples, y, n));
+        prop_assert_eq!(dd.to_state_set(&dd.state_set_x_dd(y)), y.clone());
+        let d_safe: HashSet<_> = dd
+            .safe_actions(y)
+            .into_iter()
+            .map(|p| dd.pair_of(p))
+            .collect();
+        let i_safe: HashSet<_> = idx
+            .safe_actions(y)
+            .into_iter()
+            .map(|p| (idx.pair_source(p), idx.pair_input(p)))
+            .collect();
+        prop_assert_eq!(d_safe, i_safe);
+
+        // Reachability: same winning set, ranks and (as (x, u) pairs) chosen actions.
+        for c in [None, Some(z)] {
+            let (r, e) = (dd.reachability(y, c), idx.reachability(y, c));
+            prop_assert_eq!(&r.winning, &e.winning);
+            prop_assert_eq!(&r.rank, &e.rank);
+            let got: HashMap<_, _> = r.chosen.iter().map(|(&x, &p)| (x, dd.pair_of(p))).collect();
+            let want: HashMap<_, _> = e
+                .chosen
+                .iter()
+                .map(|(&x, &p)| (x, (idx.pair_source(p), idx.pair_input(p))))
+                .collect();
+            prop_assert_eq!(got, want);
+        }
+        prop_assert_eq!(
+            dd.reachability(y, None).winning,
+            reachability_reference(triples, y, n).winning
+        );
+
+        for safe in [y, z] {
+            prop_assert_eq!(
+                dd.invariance(safe).invariant,
+                invariance_reference(triples, safe, n).invariant
+            );
+        }
+        Ok(())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(100))]
+
+        #[test]
+        fn bdd_matches_explicit((n, a, triples, y, z, filter) in arb_case()) {
+            check::<oxidd::bdd::BDDFunction>(n, a, &triples, &y, &z, &filter)?;
+        }
+
+        #[test]
+        fn bcdd_matches_explicit((n, a, triples, y, z, filter) in arb_case()) {
+            check::<oxidd::bcdd::BCDDFunction>(n, a, &triples, &y, &z, &filter)?;
+        }
+    }
+
+    #[test]
+    fn five_state_on_decision_diagrams() {
+        let triples: Vec<_> = (0..5u32)
+            .flat_map(|x| (0..2u32).map(move |u| (StateId(x), InputId(u))))
+            .flat_map(|(x, u)| {
+                five_state()
+                    .successors(x, u)
+                    .map(move |y| (x, u, y))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let bdd = BddBackend::from_triples(5, 2, triples.iter().copied());
+        let bcdd = BcddBackend::from_triples(5, 2, triples.iter().copied());
+        assert_eq!((bdd.n_pairs(), bdd.n_incidences()), (10, 12));
+        assert!(bdd.transition_node_count() > 0);
+
+        let mut target = StateSet::zeros(5);
+        target.insert(4);
+        let mut safe = StateSet::ones(5);
+        safe.remove(3);
+        let backends: [&dyn ControlledTransitionAdt; 2] = [&bdd, &bcdd];
+        for dd in backends {
+            let r = dd.reachability(&target, None);
+            assert_eq!(r.winning, StateSet::ones(5));
+            assert_eq!(r.rank, vec![3, 2, 1, 1, 0]);
+            // Lowest input per state: A→L, B→R, C→R, D→R (grid ids x*2+u).
+            let chosen: HashMap<u32, u32> = r.chosen.iter().map(|(x, p)| (x.0, p.0)).collect();
+            assert_eq!(chosen, HashMap::from([(0, 0), (1, 3), (2, 5), (3, 7)]));
+            assert_eq!(dd.invariance(&safe).invariant, safe);
+        }
+    }
+
+    #[test]
+    fn dd_system_without_transitions() {
+        let dd = BddBackend::from_triples(1, 1, []);
+        let all = StateSet::ones(1);
+        assert_eq!((dd.n_pairs(), dd.n_incidences()), (0, 0));
+        assert!(dd.cpre(&all).is_empty());
+        assert!(dd.invariance(&all).invariant.is_empty());
+        assert_eq!(dd.reachability(&all, None).rank, vec![0]);
+        assert_eq!(dd.successors(StateId(0), InputId(0)).count(), 0);
+    }
+}
+
 fn five_state() -> IndexedFrozen {
     let t = [
         (0, 0, 1),
@@ -354,6 +568,7 @@ fn indexed_frozen_is_object_safe() {
     let dynamic: &dyn ControlledTransitionAdt = &store;
     assert_eq!(dynamic.states().len(), 5);
     assert_eq!(dynamic.inputs().len(), 2);
-    assert!(!dynamic.has_reverse_incidence());
+    assert!(dynamic.has_reverse_incidence());
     assert_eq!(store.find_pair(StateId(2), InputId(1)), Some(PairId(5)));
+    assert!(!store.without_reverse().has_reverse_incidence());
 }

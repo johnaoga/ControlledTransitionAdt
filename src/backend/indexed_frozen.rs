@@ -1,6 +1,7 @@
-//! Forward-CSR frozen transition store.
+//! CSR frozen transition store: forward incidence plus an optional reverse index.
 //!
-//! See specs.md § F5 — IndexedFrozen Backend (Forward CSR)
+//! See specs.md § F5 — IndexedFrozen Backend (Forward CSR); the reverse CSR
+//! (`rev_off` / `rev_pair`) is the Phase 2 addition.
 
 use crate::semantic::types::{
     InputId, InputSet, PairId, PairSet, ReachResult, SafetyResult, StateId, StateSet,
@@ -22,8 +23,14 @@ use crate::semantic::ControlledTransitionAdt;
 ///   are strictly increasing (binary-searchable).
 /// - Each pair's successor slice is non-empty, sorted and duplicate-free.
 ///
-/// Phase 2 will add `rev_off` / `rev_pair` (one extra counting pass over `succ`)
-/// for O(M+H+N) solvers.
+/// # Reverse incidence (Phase 2)
+/// - `rev_pair[rev_off[y]..rev_off[y+1]]` → PairIds having y as a successor, in
+///   increasing PairId order.
+///
+/// `HashBuilder::freeze` builds it (one extra counting pass over `succ`, M + N + 1
+/// extra words); the solvers then run in O(M+H+N). `freeze_forward_only` /
+/// [`IndexedFrozen::without_reverse`] give the Phase 1 layout, on which the solvers
+/// fall back to the O(k(M+H)) scans.
 pub struct IndexedFrozen {
     pub(crate) n_states: usize,
     pub(crate) n_inputs: usize,
@@ -45,9 +52,9 @@ pub struct IndexedFrozen {
     /// Successor list. Length M.
     pub(crate) succ: Vec<StateId>,
 
-    // Phase 2 placeholders — None in Phase 1.
+    /// Reverse incidence: state → range into `rev_pair`. Length N+1 when present.
     pub(crate) rev_off: Option<Vec<u64>>,
-    #[allow(dead_code)] // read by the Phase 2 reverse-index solvers
+    /// Pairs having a given state as successor. Length M when present.
     pub(crate) rev_pair: Option<Vec<PairId>>,
 
     /// Universe sets returned by `states()` / `inputs()`.
@@ -76,9 +83,63 @@ impl IndexedFrozen {
         self.n_incidences
     }
 
-    /// True if the reverse incidence index is present (Phase 2+).
+    /// True if the reverse incidence index is present.
     pub fn has_reverse(&self) -> bool {
         self.rev_off.is_some()
+    }
+
+    /// Build the reverse incidence index by counting sort over `succ`. O(M+H+N);
+    /// no-op if already present.
+    pub fn build_reverse_index(&mut self) {
+        if self.has_reverse() {
+            return;
+        }
+        let n = self.n_states;
+        let mut rev_off = vec![0u64; n + 1];
+        for y in &self.succ {
+            rev_off[y.0 as usize + 1] += 1;
+        }
+        for y in 0..n {
+            rev_off[y + 1] += rev_off[y];
+        }
+        let mut cursor: Vec<u64> = rev_off[..n].to_vec();
+        let mut rev_pair = vec![PairId(0); self.n_incidences];
+        // Pairs are visited in increasing order, so each state's list ends up sorted.
+        for p in 0..self.n_pairs as u32 {
+            for y in self.succs_for_pair(PairId(p)) {
+                let c = &mut cursor[y.0 as usize];
+                rev_pair[*c as usize] = PairId(p);
+                *c += 1;
+            }
+        }
+        self.rev_off = Some(rev_off);
+        self.rev_pair = Some(rev_pair);
+    }
+
+    /// This store with the reverse incidence index built.
+    pub fn with_reverse(mut self) -> Self {
+        self.build_reverse_index();
+        self
+    }
+
+    /// This store with the reverse incidence index dropped (Phase 1 layout).
+    pub fn without_reverse(mut self) -> Self {
+        self.rev_off = None;
+        self.rev_pair = None;
+        self
+    }
+
+    /// The reverse CSR arrays `(rev_off, rev_pair)`, if present.
+    #[inline]
+    pub(crate) fn reverse_index(&self) -> Option<(&[u64], &[PairId])> {
+        Some((self.rev_off.as_deref()?, self.rev_pair.as_deref()?))
+    }
+
+    /// Pairs having y as a successor, in increasing PairId order; `None` without a
+    /// reverse index.
+    pub fn rev_pairs(&self, y: StateId) -> Option<&[PairId]> {
+        let (off, pairs) = self.reverse_index()?;
+        Some(&pairs[off[y.0 as usize] as usize..off[y.0 as usize + 1] as usize])
     }
 
     /// Returns the pair id range for state x as (start, end) into pair_source/pair_input.
@@ -154,8 +215,16 @@ impl ControlledTransitionAdt for IndexedFrozen {
         Box::new(slice.iter().copied())
     }
 
-    /// Phase 1: full scan over all pairs, O(M) — no reverse index.
+    /// O(1 + d⁻(y)) with the reverse index; otherwise a full scan over all pairs.
+    /// Either way the pairs come out in increasing (source, input) order.
     fn predecessor_pairs(&self, y: StateId) -> Box<dyn Iterator<Item = (StateId, InputId)> + '_> {
+        if let Some(pairs) = self.rev_pairs(y) {
+            return Box::new(
+                pairs
+                    .iter()
+                    .map(|&p| (self.pair_source(p), self.pair_input(p))),
+            );
+        }
         Box::new((0..self.n_pairs).filter_map(move |p| {
             self.succs_for_pair(PairId(p as u32))
                 .binary_search(&y)

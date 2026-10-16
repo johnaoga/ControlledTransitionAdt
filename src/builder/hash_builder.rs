@@ -82,6 +82,20 @@ impl HashBuilder {
         self.pairs.entry((x, u)).or_default().insert(y);
     }
 
+    /// Encode the relation as a decision diagram (`BddBackend`, `BcddBackend`). The
+    /// builder is left intact.
+    #[cfg(feature = "oxidd")]
+    pub fn freeze_dd<F: crate::backend::bdd::DdKind>(&self) -> crate::backend::bdd::DdBackend<F> {
+        crate::backend::bdd::DdBackend::from_triples(self.n_states, self.n_inputs, self.triples())
+    }
+
+    /// Distinct (x, u, y) triples, in arbitrary order.
+    pub fn triples(&self) -> impl Iterator<Item = (StateId, InputId, StateId)> + '_ {
+        self.pairs
+            .iter()
+            .flat_map(|(&(x, u), succs)| succs.iter().map(move |&y| (x, u, y)))
+    }
+
     /// Grid-encoded pair id of (x, u) — see the type-level docs.
     pub fn pair_id(&self, x: StateId, u: InputId) -> PairId {
         let id = x.0 as u64 * self.n_inputs as u64 + u.0 as u64;
@@ -94,13 +108,19 @@ impl HashBuilder {
         (StateId(p.0 / a), InputId(p.0 % a))
     }
 
-    /// Consume the builder and produce a forward-CSR `IndexedFrozen`.
+    /// Consume the builder and produce an `IndexedFrozen` with both the forward CSR
+    /// and the reverse incidence index (one extra O(M+H+N) counting pass).
+    pub fn freeze(self) -> IndexedFrozen {
+        self.freeze_forward_only().with_reverse()
+    }
+
+    /// Consume the builder and produce a forward-only `IndexedFrozen` (Phase 1 layout).
     ///
     /// Pairs are counting-sorted by source, then each state's (at most A) pairs are
     /// sorted by input and each successor slice is sorted. Complexity:
     /// O(N + H + M + Σ_x d_x log d_x + Σ_p d⁺_p log d⁺_p) — linear up to the small
     /// per-state / per-pair sorts.
-    pub fn freeze(self) -> IndexedFrozen {
+    pub fn freeze_forward_only(self) -> IndexedFrozen {
         let n = self.n_states;
         let h = self.pairs.len();
         let m = self.n_incidences();

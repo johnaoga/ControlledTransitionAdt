@@ -35,6 +35,9 @@ jobs:
       - name: Clippy (default features)
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Clippy (oxidd feature)
+        run: cargo clippy --all-targets --features oxidd -- -D warnings
+
       - name: Run tests (default features)
         run: cargo test --all-targets
 

@@ -3,14 +3,20 @@
 //! Run: cargo bench                      (reports in target/criterion/)
 //!      PSCTS_BENCH_SIDE=200 cargo bench  (synthetic grid side; default 100 → N = 10⁴)
 //!
-//! Groups: `build/{hash,indexed}`, `query/{contains,successors,predecessor_pairs,
-//! safe_actions,cpre}/{hash,indexed}`, `solve/{reachability,invariance}/indexed`.
+//! Groups: `build/{hash,indexed,indexed_fwd}`, `query/{contains,successors,
+//! safe_actions,cpre}/{hash,indexed}`, `query/predecessor_pairs/{indexed,indexed_fwd}`,
+//! `solve/{reachability,invariance}/{indexed,indexed_fwd}`.
+//! `indexed` carries the reverse incidence index (O(M+H+N) solvers); `indexed_fwd` is
+//! the forward-only layout (O(k(M+H)) scans). With `--features oxidd` the `bdd` and
+//! `bcdd` decision-diagram backends join every group.
 //! Every benchmark runs on the Appendix B five-state example and on a synthetic grid.
 
 use criterion::{
     black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput,
 };
 use phase_specialized_cts::backend::IndexedFrozen;
+#[cfg(feature = "oxidd")]
+use phase_specialized_cts::backend::{BcddBackend, BddBackend};
 use phase_specialized_cts::builder::HashBuilder;
 use phase_specialized_cts::semantic::types::{InputId, StateId, StateSet};
 use phase_specialized_cts::semantic::ControlledTransitionAdt;
@@ -174,11 +180,27 @@ fn bench_build(c: &mut Criterion) {
                 BatchSize::LargeInput,
             )
         });
+        g.bench_function(BenchmarkId::new("indexed_fwd", &inst.name), |b| {
+            b.iter_batched(
+                || builder.clone(),
+                |bld| black_box(bld.freeze_forward_only()),
+                BatchSize::LargeInput,
+            )
+        });
+        #[cfg(feature = "oxidd")]
+        {
+            g.bench_function(BenchmarkId::new("bdd", &inst.name), |b| {
+                b.iter(|| black_box(builder.freeze_dd::<oxidd::bdd::BDDFunction>()))
+            });
+            g.bench_function(BenchmarkId::new("bcdd", &inst.name), |b| {
+                b.iter(|| black_box(builder.freeze_dd::<oxidd::bcdd::BCDDFunction>()))
+            });
+        }
     }
     g.finish();
 }
 
-/// Run `f` on both backends of every instance, under `group/{hash,indexed}/<instance>`.
+/// Run `f` on every backend of every instance, under `group/<backend>/<instance>`.
 fn bench_both<F>(c: &mut Criterion, group: &str, per_iter: Option<u64>, f: F)
 where
     F: Fn(&dyn ControlledTransitionAdt, &Instance),
@@ -190,8 +212,16 @@ where
         }
         let hash = inst.builder();
         let indexed: IndexedFrozen = inst.builder().freeze();
-        let backends: [(&str, &dyn ControlledTransitionAdt); 2] =
-            [("hash", &hash), ("indexed", &indexed)];
+        #[allow(unused_mut)]
+        let mut backends: Vec<(&str, &dyn ControlledTransitionAdt)> =
+            vec![("hash", &hash), ("indexed", &indexed)];
+        #[cfg(feature = "oxidd")]
+        let (bdd, bcdd): (BddBackend, BcddBackend) = (hash.freeze_dd(), hash.freeze_dd());
+        #[cfg(feature = "oxidd")]
+        backends.extend([
+            ("bdd", &bdd as &dyn ControlledTransitionAdt),
+            ("bcdd", &bcdd),
+        ]);
         for (label, backend) in backends {
             g.bench_function(BenchmarkId::new(label, &inst.name), |b| {
                 b.iter(|| f(black_box(backend), &inst))
@@ -219,28 +249,56 @@ fn bench_queries(c: &mut Criterion) {
         black_box(s.cpre(&inst.target));
     });
 
-    // Forward-only store: O(M) scan per call (Phase 2 adds the reverse index).
+    // Reverse index: O(d⁻(y)) per call; forward-only: O(M) scan per call.
     let mut g = c.benchmark_group("query/predecessor_pairs");
     for inst in instances() {
-        let store = inst.builder().freeze();
         let y = inst.queries[0].2;
-        g.bench_function(BenchmarkId::new("indexed", &inst.name), |b| {
-            b.iter(|| black_box(store.predecessor_pairs(black_box(y)).count()))
-        });
+        for (label, store) in frozen_stores(&inst) {
+            g.bench_function(BenchmarkId::new(label, &inst.name), |b| {
+                b.iter(|| black_box(store.predecessor_pairs(black_box(y)).count()))
+            });
+        }
     }
     g.finish();
+}
+
+/// The frozen backends compared in the solver benchmarks.
+fn frozen_stores(inst: &Instance) -> Vec<(&'static str, Box<dyn ControlledTransitionAdt>)> {
+    let builder = inst.builder();
+    #[allow(unused_mut)]
+    let mut stores: Vec<(&'static str, Box<dyn ControlledTransitionAdt>)> = vec![
+        ("indexed", Box::new(builder.clone().freeze())),
+        (
+            "indexed_fwd",
+            Box::new(builder.clone().freeze_forward_only()),
+        ),
+    ];
+    #[cfg(feature = "oxidd")]
+    {
+        stores.push((
+            "bdd",
+            Box::new(builder.freeze_dd::<oxidd::bdd::BDDFunction>()),
+        ));
+        stores.push((
+            "bcdd",
+            Box::new(builder.freeze_dd::<oxidd::bcdd::BCDDFunction>()),
+        ));
+    }
+    stores
 }
 
 fn bench_solvers(c: &mut Criterion) {
     let mut g = c.benchmark_group("solve");
     for inst in instances() {
-        let store = inst.builder().freeze();
-        g.bench_function(BenchmarkId::new("reachability/indexed", &inst.name), |b| {
-            b.iter(|| black_box(store.reachability(black_box(&inst.target), None)))
-        });
-        g.bench_function(BenchmarkId::new("invariance/indexed", &inst.name), |b| {
-            b.iter(|| black_box(store.invariance(black_box(&inst.safe))))
-        });
+        for (label, store) in frozen_stores(&inst) {
+            let id = |solver: &str| BenchmarkId::new(format!("{solver}/{label}"), &inst.name);
+            g.bench_function(id("reachability"), |b| {
+                b.iter(|| black_box(store.reachability(black_box(&inst.target), None)))
+            });
+            g.bench_function(id("invariance"), |b| {
+                b.iter(|| black_box(store.invariance(black_box(&inst.safe))))
+            });
+        }
     }
     g.finish();
 }

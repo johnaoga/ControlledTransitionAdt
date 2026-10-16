@@ -10,7 +10,7 @@ The end deliverable is a Rust crate + benchmark harness supporting a peer-review
 
 ## Current state
 
-Phases 0–1 implemented. All tests in `tests/` pass; `tests/` is the source of truth and must not be edited without discussing it with the user first. Extra differential/property tests live in `src/conformance_tests.rs` (`#[cfg(test)]`), including HashBuilder ≡ IndexedFrozen on every ADT op, rank optimality, controller progress, safety closure, and trace round-trip.
+Phases 0–3 implemented. All tests in `tests/` pass; `tests/` is the source of truth and must not be edited without discussing it with the user first. Extra differential/property tests live in `src/conformance_tests.rs` (`#[cfg(test)]`), including HashBuilder ≡ IndexedFrozen on every ADT op, rank optimality, controller progress, safety closure, trace round-trip, reverse-index solvers ≡ forward-only scans (Phase 2), and — with `--features oxidd` — BddBackend / BcddBackend ≡ IndexedFrozen on every ADT op (Phase 3).
 
 Local toolchain: Homebrew Rust (`/opt/homebrew/opt/rust`, cargo/rustfmt/clippy on the default PATH). Before finishing, run the CI gates: `cargo fmt --all -- --check`, `cargo clippy --all-targets [--features oxidd] -- -D warnings`, `cargo test --all-targets [--features oxidd]`.
 
@@ -23,11 +23,11 @@ src/semantic/reference.rs — cpre_reference / reachability_reference / invarian
 src/builder/mod.rs        — TransitionBuilder trait
 src/builder/hash_builder.rs — HashBuilder: HashMap<(StateId,InputId), HashSet<StateId>>
 src/builder/trace_io.rs   — Appendix C text trace parser + serializer
-src/backend/mod.rs        — Backend trait; freeze() interface
-src/backend/indexed_frozen.rs — FrozenTransitionStore: forward CSR (Phase 1)
-src/backend/bdd.rs        — BddBackend stub (feature="oxidd", Phase 3, not wired)
-src/solver/attractor.rs   — reachability(): counter-based event-driven (Listing 2)
-src/solver/invariance.rs  — invariance(): dual deletion algorithm (Listing 3)
+src/backend/mod.rs        — backend re-exports
+src/backend/indexed_frozen.rs — IndexedFrozen: forward CSR (Phase 1) + reverse CSR rev_off/rev_pair (Phase 2)
+src/backend/bdd.rs        — DdBackend<F>, BddBackend, BcddBackend (feature="oxidd", Phase 3)
+src/solver/attractor.rs   — reachability(): event-driven over the reverse index, layered scan fallback (Listing 2)
+src/solver/invariance.rs  — invariance(): dual deletion over the reverse index, sweep fallback (Listing 3)
 src/controller/store.rs   — ControllerStore: rank table + chosen-action lookup
 src/bin/five_state.rs     — Appendix B smoke test
 src/bin/replay.rs         — trace replay binary
@@ -77,6 +77,19 @@ src/bin/replay.rs         — trace replay binary
 - Tests: `tests/five_state.rs`
 - What: Wraps `HashMap<StateId, PairId>` (chosen action per state) + `pair_input: Vec<InputId>` (from IndexedFrozen). `get_inputs(x) -> Option<InputId>`. `choose(x) -> Option<PairId>`.
 
+### Phase 2: reverse CSR and O(M+H+N) solvers
+- `HashBuilder::freeze()` builds forward + reverse CSR; `freeze_forward_only()` gives the Phase 1 layout. `IndexedFrozen::{with_reverse, without_reverse, build_reverse_index, rev_pairs}` convert / query.
+- `rev_pair[rev_off[y]..rev_off[y+1]]` lists the PairIds having y as successor, in increasing PairId order (counting sort over `succ`).
+- Both solvers dispatch on `store.reverse_index()`: event-driven (each incidence touched once) when present, the Phase 1 scans otherwise. Results are identical, including `chosen`.
+- `predecessor_pairs(y)` is O(1 + d⁻(y)) with the index.
+
+### Phase 3: decision-diagram backends (feature = "oxidd")
+- `DdBackend<F: DdKind>`: T(x,u,y) as one diagram over a binary encoding; variable order `x₀ y₀ x₁ y₁ … u₀ u₁ …` (MSB first). `BddBackend` = plain BDD, `BcddBackend` = complement-edge BDD.
+- Build with `HashBuilder::freeze_dd::<F>()` or `DdBackend::from_triples` / `with_config(…, DdConfig)`.
+- Native CPre: `safe_pairs_dd(W) = A ∧ ¬∃y.(T ∧ ¬W)`, `cpre_dd(W) = ∃u. safe_pairs_dd(W)`; `has_native_cpre()` is true.
+- Reachability / invariance are symbolic fixed points; ranks and chosen actions are enumerated per layer because `ReachResult` is explicit.
+- PairIds are grid-encoded (`x*A+u`, decode with `pair_of`), like `HashBuilder`.
+
 ## Five-state example (Appendix B) — canonical test
 States: A(0) B(1) C(2) D(3) E(4). Inputs: L(0) R(1).
 Transitions:
@@ -102,11 +115,15 @@ cargo run --bin replay -- trace.txt  # replay a trace file
 | Decision | Choice | Reason |
 |----------|--------|--------|
 | Language | Rust (not C++17/20) | No need for SCOTS/CUDD C++ ABI compat in Phase 1; Rust memory safety ideal for data-structure research |
-| BDD | oxidd (feature-gated, Phase 3) | Pure-Rust BDD/MDD/LDD; wired in Cargo.toml but not implemented |
+| BDD | oxidd ≥ 0.13 (feature-gated) | Pure-Rust BDD / complement-edge BDD; no MDD/LDD in oxidd. 0.6 (the original pin) overflowed the stack when a second manager in the process ran a GC |
+| DD variable order | x and y bits interleaved, then u bits, MSB first | Keeps T and the x↔y renaming (`⋀ xⱼ↔yⱼ`) small |
+| DD ADT conversions | ADT methods convert `StateSet` ↔ diagram on every call; `*_dd` methods are purely symbolic | The ADT is explicit; benchmark numbers for `bdd`/`bcdd` include conversion cost |
+| DD manager sizing | `DdConfig` default: 2²² nodes, 2¹⁸ cache entries, 1 thread; exhausting the node table panics | Enough for the 10⁵-state grids tried so far; raise per instance |
 | State bounds | Explicit at construction (n_states, n_inputs) | Avoids inferring bounds from max id seen; cleaner API |
 | StateSet | DenseBitVec (Vec<u64>) | Default; roaring optional later |
-| Reverse CSR | Deferred to Phase 2 | Phase 1 runs O(k(M+H)) without it; forward-only structure accommodates it with one extra pass |
-| Solver scan granularity | One full pair scan per rank layer (reach) / per deletion sweep (invariance), not per dequeued state | Matches the documented O(k(M+H)) bound with k = rounds; per-state scans would be O(N(M+H)). Live-pair lists shrink each round |
+| Reverse CSR | Built by `freeze()` (Phase 2); `freeze_forward_only()` skips it | M + N + 1 extra words for O(M+H+N) solvers; forward-only kept for the memory/time comparison |
+| Reverse-index `chosen` | Minimum PairId among the pairs firing at the state's rank | FIFO dequeue order is not PairId order; the minimum reproduces the oracle's choice exactly |
+| Forward-only scan granularity | One full pair scan per rank layer (reach) / per deletion sweep (invariance), not per dequeued state | Matches the documented O(k(M+H)) bound with k = rounds; per-state scans would be O(N(M+H)). Live-pair lists shrink each round |
 | Reach ranks / controller | rank = layer index = 1 + max succ rank (optimal); chosen = lowest PairId firing at that layer | Deterministic; verified against layered-CPre definition |
 | Oracle rank / chosen | `reachability_reference` ranks = first layer k of W_k = W_{k-1} ∪ CPre(W_{k-1}); chosen = lowest *canonical* PairId (index in sorted distinct (x,u) pairs, same numbering as `freeze`) inside W_{rank-1} | Frozen solver results are compared to the oracle exactly, including chosen PairIds |
 | Trace checksum | `# checksum: <hex>` = SHA-256 over sorted, deduplicated triples, each 12 bytes big-endian `x‖u‖y` | Order/duplicate/endianness independent (spec open question 4) |
@@ -117,16 +134,16 @@ cargo run --bin replay -- trace.txt  # replay a trace file
 ## Things to be careful about
 
 - **Trait object safety**: `impl Iterator` in trait methods breaks object safety. Use `Box<dyn Iterator<Item=StateId>>` etc. in the trait, or use GATs with `type SuccIter<'a>: Iterator<Item=StateId>`.
-- **Phase 1 solver complexity**: Both attractor and invariance do a full scan of all pairs per step — O(k(M+H)), not O(M+H+N). This is intentional and documented; Phase 2 adds the reverse index.
+- **Solver complexity**: With the reverse index both solvers are O(M+H+N). On a forward-only store they fall back to full pair scans — O(k(M+H)). Keep the two paths result-identical (`reverse_index_matches_forward_scan`).
+- **Two PairId spaces**: `IndexedFrozen` uses dense canonical PairIds; `HashBuilder` and the DD backends use grid ids `x*A+u`. Compare across backends as (x, u) pairs.
 - **Rank assignment**: A state enters winning only when all successors are already winning (remaining=0), so rank assignment is safe: `rank[x] = 1 + max(rank[z] for z in succ(chosen_pair))`. No cycle issues.
 - **Self-loops**: E-R→{E} in the five-state example. Target states start winning at rank 0; self-loop means remaining stays 0 after removing target's self-count? Be careful: initialize remaining[p] = |Succ(p)|; when we dequeue E and process E-R (which has E as successor), we decrement remaining[E-R]. If remaining[E-R] = 0 and source(E-R)=E is already winning, skip. This is fine.
 - **Empty transitions**: `cpre_reference` and all backends must handle states with no outgoing pairs (not in any pair map).
 
 ## Out of scope (don't implement these)
 
-- Reverse CSR (`rev_off`, `rev_pair`) — Phase 2
-- BDD backend (`oxidd`) — Phase 3
-- MDD/LDD, hybrid backend — Phases 3, 6
+- MDD/LDD backends — not provided by oxidd; would need another library or a hand-rolled diagram
+- Hybrid backend — Phase 6
 - SCOTS integration, plant simulator — Phase 4
 - Incremental refinement — Phase 7
 

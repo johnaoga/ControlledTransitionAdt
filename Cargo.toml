@@ -8,8 +8,9 @@ license = "MIT"
 # See specs.md for architecture rationale.
 
 [dependencies]
-# Optional BDD backend — feature-gated; wired in Phase 3.
-oxidd = { version = "0.6", optional = true }
+# Optional decision-diagram backends (BDD, complement-edge BDD) — feature-gated.
+# 0.6 overflowed the stack once a second manager in the process ran a GC; keep >= 0.13.
+oxidd = { version = "0.13", optional = true }
 # SHA-256 checksum of the canonical triple stream in trace headers.
 sha2 = "0.10"
 
